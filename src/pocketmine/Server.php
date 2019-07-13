@@ -112,7 +112,6 @@ use function array_sum;
 use function asort;
 use function assert;
 use function base64_encode;
-use function bin2hex;
 use function class_exists;
 use function count;
 use function define;
@@ -893,6 +892,11 @@ class Server{
 	}
 
 	/**
+	 * Returns an online player whose name begins with or equals the given string (case insensitive).
+	 * The closest match will be returned, or null if there are no online matches.
+	 *
+	 * @see Server::getPlayerExact()
+	 *
 	 * @param string $name
 	 *
 	 * @return Player|null
@@ -918,6 +922,8 @@ class Server{
 	}
 
 	/**
+	 * Returns an online player with the given name (case insensitive), or null if not found.
+	 *
 	 * @param string $name
 	 *
 	 * @return Player|null
@@ -934,6 +940,9 @@ class Server{
 	}
 
 	/**
+	 * Returns a list of online players whose names contain with the given string (case insensitive).
+	 * If an exact match is found, only that match is returned.
+	 *
 	 * @param string $partialName
 	 *
 	 * @return Player[]
@@ -1710,7 +1719,7 @@ class Server{
 
 			register_shutdown_function([$this, "crashDump"]);
 
-			$this->queryRegenerateTask = new QueryRegenerateEvent($this, 5);
+			$this->queryRegenerateTask = new QueryRegenerateEvent($this);
 
 			$this->pluginManager->loadPlugins($this->pluginPath);
 
@@ -2528,7 +2537,7 @@ class Server{
 			if(strlen($payload) > 2 and substr($payload, 0, 2) === "\xfe\xfd" and $this->queryHandler instanceof QueryHandler){
 				$this->queryHandler->handle($interface, $address, $port, $payload);
 			}else{
-				$this->logger->debug("Unhandled raw packet from $address $port: " . bin2hex($payload));
+				$this->logger->debug("Unhandled raw packet from $address $port: " . base64_encode($payload));
 			}
 		}catch(\Throwable $e){
 			$this->logger->logException($e);
@@ -2577,15 +2586,10 @@ class Server{
 			$this->currentTPS = 20;
 			$this->currentUse = 0;
 
+			($this->queryRegenerateTask = new QueryRegenerateEvent($this))->call();
+
 			$this->network->updateName();
 			$this->network->resetStatistics();
-		}
-
-		if(($this->tickCounter & 0b111111111) === 0){
-			($this->queryRegenerateTask = new QueryRegenerateEvent($this, 5))->call();
-			if($this->queryHandler !== null){
-				$this->queryHandler->regenerateInfo();
-			}
 		}
 
 		if($this->autoSave and ++$this->autoSaveTicker >= $this->autoSaveTicks){

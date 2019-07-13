@@ -26,18 +26,24 @@ namespace pocketmine\network\mcpe\protocol;
 use pocketmine\utils\Binary;
 
 
+use function file_get_contents;
+use function json_decode;
 use pocketmine\math\Vector3;
 use pocketmine\network\mcpe\NetworkBinaryStream;
 use pocketmine\network\mcpe\NetworkSession;
 use pocketmine\network\mcpe\protocol\types\PlayerPermissions;
 use pocketmine\network\mcpe\protocol\types\RuntimeBlockMapping;
 use function count;
+use pocketmine\network\mcpe\protocol\types\RuntimeItemMapping;
+use const pocketmine\RESOURCE_PATH;
 
 class StartGamePacket extends DataPacket{
 	public const NETWORK_ID = ProtocolInfo::START_GAME_PACKET;
 
 	/** @var string|null */
-	private static $runtimeIdTableCache;
+	private static $blockTableCache = null;
+	/** @var string|null */
+	private static $itemTableCache = null;
 
 	/** @var int */
 	public $entityUniqueId;
@@ -122,6 +128,8 @@ class StartGamePacket extends DataPacket{
 	public $isFromWorldTemplate = false;
 	/** @var bool */
 	public $isWorldTemplateOptionLocked = false;
+	/** @var bool */
+	public $onlySpawnV1Villagers = false;
 
 	/** @var string */
 	public $levelId = ""; //base64 string, usually the same as world folder name in vanilla
@@ -138,8 +146,10 @@ class StartGamePacket extends DataPacket{
 	/** @var string */
 	public $multiplayerCorrelationId = ""; //TODO: this should be filled with a UUID of some sort
 
-	/** @var array|null each entry must have a "name" (string) and "data" (int16) element */
-	public $runtimeIdTable = null;
+	/** @var array|null ["name" (string), "data" (int16), "legacy_id" (int16)] */
+	public $blockTable = null;
+	/** @var array|null string (name) => int16 (legacyID) */
+	public $itemTable = null;
 
 	protected function decodePayload(){
 		$this->entityUniqueId = $this->getEntityUniqueId();
@@ -182,6 +192,7 @@ class StartGamePacket extends DataPacket{
 		$this->useMsaGamertagsOnly = (($this->get(1) !== "\x00"));
 		$this->isFromWorldTemplate = (($this->get(1) !== "\x00"));
 		$this->isWorldTemplateOptionLocked = (($this->get(1) !== "\x00"));
+		$this->onlySpawnV1Villagers = (($this->get(1) !== "\x00"));
 
 		$this->levelId = $this->getString();
 		$this->worldName = $this->getString();
@@ -191,15 +202,21 @@ class StartGamePacket extends DataPacket{
 
 		$this->enchantmentSeed = $this->getVarInt();
 
-		$count = $this->getUnsignedVarInt();
-		$table = [];
-		for($i = 0; $i < $count; ++$i){
+		$this->blockTable = [];
+		for($i = 0, $count = $this->getUnsignedVarInt(); $i < $count; ++$i){
 			$id = $this->getString();
-			$data = ((\unpack("v", $this->get(2))[1]));
+			$data = ((\unpack("v", $this->get(2))[1] << 48 >> 48));
+			$unknown = ((\unpack("v", $this->get(2))[1] << 48 >> 48));
 
-			$table[$i] = ["name" => $id, "data" => $data];
+			$this->blockTable[$i] = ["name" => $id, "data" => $data, "legacy_id" => $unknown];
 		}
-		$this->runtimeIdTable = $table;
+		$this->itemTable = [];
+		for($i = 0, $count = $this->getUnsignedVarInt(); $i < $count; ++$i){
+			$id = $this->getString();
+			$legacyId = ((\unpack("v", $this->get(2))[1] << 48 >> 48));
+
+			$this->itemTable[$id] = $legacyId;
+		}
 
 		$this->multiplayerCorrelationId = $this->getString();
 	}
@@ -245,6 +262,7 @@ class StartGamePacket extends DataPacket{
 		($this->buffer .= ($this->useMsaGamertagsOnly ? "\x01" : "\x00"));
 		($this->buffer .= ($this->isFromWorldTemplate ? "\x01" : "\x00"));
 		($this->buffer .= ($this->isWorldTemplateOptionLocked ? "\x01" : "\x00"));
+		($this->buffer .= ($this->onlySpawnV1Villagers ? "\x01" : "\x00"));
 
 		$this->putString($this->levelId);
 		$this->putString($this->worldName);
@@ -254,14 +272,22 @@ class StartGamePacket extends DataPacket{
 
 		$this->putVarInt($this->enchantmentSeed);
 
-		if($this->runtimeIdTable === null){
-			if(self::$runtimeIdTableCache === null){
+		if($this->blockTable === null){
+			if(self::$blockTableCache === null){
 				//this is a really nasty hack, but it'll do for now
-				self::$runtimeIdTableCache = self::serializeBlockTable(RuntimeBlockMapping::getBedrockKnownStates());
+				self::$blockTableCache = self::serializeBlockTable(RuntimeBlockMapping::getBedrockKnownStates());
 			}
-			($this->buffer .= self::$runtimeIdTableCache);
+			($this->buffer .= self::$blockTableCache);
 		}else{
-			($this->buffer .= self::serializeBlockTable($this->runtimeIdTable));
+			($this->buffer .= self::serializeBlockTable($this->blockTable));
+		}
+		if($this->itemTable === null){
+			if(self::$itemTableCache === null){
+				self::$itemTableCache = self::serializeItemTable(json_decode(file_get_contents(RESOURCE_PATH . '/vanilla/item_id_map.json'), true));
+			}
+			($this->buffer .= self::$itemTableCache);
+		}else{
+			($this->buffer .= self::serializeItemTable($this->itemTable));
 		}
 
 		$this->putString($this->multiplayerCorrelationId);
@@ -273,6 +299,17 @@ class StartGamePacket extends DataPacket{
 		foreach($table as $v){
 			$stream->putString($v["name"]);
 			$stream->putLShort($v["data"]);
+			$stream->putLShort($v["legacy_id"]);
+		}
+		return $stream->getBuffer();
+	}
+
+	private static function serializeItemTable(array $table) : string{
+		$stream = new NetworkBinaryStream();
+		$stream->putUnsignedVarInt(count($table));
+		foreach($table as $name => $legacyId){
+			$stream->putString($name);
+			$stream->putLShort($legacyId);
 		}
 		return $stream->getBuffer();
 	}

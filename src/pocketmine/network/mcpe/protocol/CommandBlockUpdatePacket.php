@@ -59,6 +59,10 @@ class CommandBlockUpdatePacket extends DataPacket{
 	public $name;
 	/** @var bool */
 	public $shouldTrackOutput;
+	/** @var int */
+	public $tickDelay;
+	/** @var bool */
+	public $executeOnFirstTick;
 
 	protected function decodePayload(){
 		$this->isBlock = (($this->get(1) !== "\x00"));
@@ -78,6 +82,8 @@ class CommandBlockUpdatePacket extends DataPacket{
 		$this->name = $this->getString();
 
 		$this->shouldTrackOutput = (($this->get(1) !== "\x00"));
+		$this->tickDelay = ((\unpack("V", $this->get(4))[1] << 32 >> 32));
+		$this->executeOnFirstTick = (($this->get(1) !== "\x00"));
 	}
 
 	protected function encodePayload(){
@@ -97,6 +103,8 @@ class CommandBlockUpdatePacket extends DataPacket{
 		$this->putString($this->name);
 
 		($this->buffer .= ($this->shouldTrackOutput ? "\x01" : "\x00"));
+		($this->buffer .= (\pack("V", $this->tickDelay)));
+		($this->buffer .= ($this->executeOnFirstTick ? "\x01" : "\x00"));
 	}
 
 	public function handle(NetworkSession $session) : bool{
